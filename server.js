@@ -55,12 +55,20 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email tự động qua Gmail API (Đã lọc theo MB eBanking và VCB Digibank)
+// 4. Hàm quét email và tự động dọn dẹp dữ liệu cũ hơn 24h
 async function checkEmailsViaApi() {
     try {
+        // Tự động xóa các bản ghi trong MongoDB cũ hơn 24 giờ
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const deleteResult = await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
+        if (deleteResult.deletedCount > 0) {
+            console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ hơn 24h trên MongoDB.`);
+        }
+
+        // Chỉ quét email chưa đọc, chứa từ khóa VCB/MB và trong vòng 24 giờ gần nhất (newer_than:1d)
         const res = await gmail.users.messages.list({
             userId: 'me',
-            q: 'is:unread ("MB eBanking" OR "VCB Digibank")'
+            q: 'is:unread newer_than:1d ("MB eBanking" OR "VCB Digibank")'
         });
 
         const messages = res.data.messages;
@@ -97,7 +105,7 @@ async function checkEmailsViaApi() {
             // Đánh dấu email là Đã đọc trên Gmail
             await gmail.users.messages.batchModify({
                 userId: 'me',
-                requestBody: {
+            requestBody: {
                     ids: [msgId],
                     removeLabelIds: ['UNREAD']
                 }
@@ -108,10 +116,10 @@ async function checkEmailsViaApi() {
     }
 }
 
-// Quét email mỗi 30 giây
+// Quét email định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
-// API cho ESP32 hoặc bên thứ 3 gọi (nếu cần)
+// API cho thiết bị khác gọi lấy thông tin
 app.get('/api/check-bank-audio', async (req, res) => {
     try {
         const pendingTx = await Transaction.findOne({ is_read: false }).sort({ created_at: 1 });
