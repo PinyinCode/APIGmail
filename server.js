@@ -55,12 +55,12 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email tự động qua Gmail API và đẩy về Telegram
+// 4. Hàm quét email tự động qua Gmail API (Đã lọc theo MB eBanking và VCB Digibank)
 async function checkEmailsViaApi() {
     try {
         const res = await gmail.users.messages.list({
             userId: 'me',
-            q: 'is:unread'
+            q: 'is:unread ("MB eBanking" OR "VCB Digibank")'
         });
 
         const messages = res.data.messages;
@@ -80,7 +80,7 @@ async function checkEmailsViaApi() {
 
             const headers = detail.data.payload.headers;
             const subjectHeader = headers.find(h => h.name.toLowerCase() === 'subject');
-            const subject = subjectHeader ? subjectHeader.value : 'Biến động số dư';
+            const subject = subjectHeader ? subjectHeader.value : 'Biến động số dư ngân hàng';
 
             // Lưu vào MongoDB
             const newTx = new Transaction({
@@ -89,7 +89,7 @@ async function checkEmailsViaApi() {
                 is_read: false
             });
             await newTx.save();
-            console.log("Đã lưu email mới:", subject);
+            console.log("Đã lưu email ngân hàng mới:", subject);
 
             // Bắn tin nhắn về Telegram
             await sendTelegramNotification(subject);
