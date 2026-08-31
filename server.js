@@ -55,17 +55,23 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email và tự động dọn dẹp dữ liệu cũ hơn 24h
+// 4. Hàm quét email (Đã thêm kiểm tra trạng thái kết nối MongoDB)
 async function checkEmailsViaApi() {
+    // Kiểm tra nếu MongoDB chưa sẵn sàng (readyState != 1) thì bỏ qua lượt quét này
+    if (mongoose.connection.readyState !== 1) {
+        console.log("Đang chờ kết nối MongoDB...");
+        return;
+    }
+
     try {
-        // Tự động xóa các bản ghi trong MongoDB cũ hơn 24 giờ
+        // Tự động xóa dữ liệu cũ hơn 24 giờ
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const deleteResult = await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
         if (deleteResult.deletedCount > 0) {
-            console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ hơn 24h trên MongoDB.`);
+            console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ trên MongoDB.`);
         }
 
-        // Chỉ quét email chưa đọc, chứa từ khóa VCB/MB và trong vòng 24 giờ gần nhất (newer_than:1d)
+        // Quét email chưa đọc trong 24h qua có chứa từ khóa
         const res = await gmail.users.messages.list({
             userId: 'me',
             q: 'is:unread newer_than:1d ("MB eBanking" OR "VCB Digibank")'
@@ -105,7 +111,7 @@ async function checkEmailsViaApi() {
             // Đánh dấu email là Đã đọc trên Gmail
             await gmail.users.messages.batchModify({
                 userId: 'me',
-            requestBody: {
+                requestBody: {
                     ids: [msgId],
                     removeLabelIds: ['UNREAD']
                 }
@@ -116,7 +122,7 @@ async function checkEmailsViaApi() {
     }
 }
 
-// Quét email định kỳ mỗi 30 giây
+// Quét định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
 // API cho thiết bị khác gọi lấy thông tin
