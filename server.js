@@ -57,21 +57,18 @@ async function sendTelegramNotification(text) {
 
 // 4. Hàm quét email (Đã thêm kiểm tra trạng thái kết nối MongoDB)
 async function checkEmailsViaApi() {
-    // Kiểm tra nếu MongoDB chưa sẵn sàng (readyState != 1) thì bỏ qua lượt quét này
     if (mongoose.connection.readyState !== 1) {
         console.log("Đang chờ kết nối MongoDB...");
         return;
     }
 
     try {
-        // Tự động xóa dữ liệu cũ hơn 24 giờ
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const deleteResult = await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
         if (deleteResult.deletedCount > 0) {
             console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ trên MongoDB.`);
         }
 
-        // Quét email chưa đọc trong 24h qua có chứa từ khóa
         const res = await gmail.users.messages.list({
             userId: 'me',
             q: 'is:unread newer_than:1d ("MB eBanking" OR "VCB Digibank")'
@@ -96,7 +93,6 @@ async function checkEmailsViaApi() {
             const subjectHeader = headers.find(h => h.name.toLowerCase() === 'subject');
             const subject = subjectHeader ? subjectHeader.value : 'Biến động số dư ngân hàng';
 
-            // Lưu vào MongoDB
             const newTx = new Transaction({
                 msgId: msgId,
                 message: subject,
@@ -105,10 +101,8 @@ async function checkEmailsViaApi() {
             await newTx.save();
             console.log("Đã lưu email ngân hàng mới:", subject);
 
-            // Bắn tin nhắn về Telegram
             await sendTelegramNotification(subject);
 
-            // Đánh dấu email là Đã đọc trên Gmail
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
@@ -122,10 +116,8 @@ async function checkEmailsViaApi() {
     }
 }
 
-// Quét định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
-// API cho thiết bị khác gọi lấy thông tin
 app.get('/api/check-bank-audio', async (req, res) => {
     try {
         const pendingTx = await Transaction.findOne({ is_read: false }).sort({ created_at: 1 });
