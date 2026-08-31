@@ -55,7 +55,7 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email (Đã thêm kiểm tra trạng thái kết nối MongoDB)
+// 4. Hàm quét email tự động
 async function checkEmailsViaApi() {
     if (mongoose.connection.readyState !== 1) {
         console.log("Đang chờ kết nối MongoDB...");
@@ -63,12 +63,14 @@ async function checkEmailsViaApi() {
     }
 
     try {
+        // Tự động xóa dữ liệu cũ hơn 24 giờ
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const deleteResult = await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
         if (deleteResult.deletedCount > 0) {
             console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ trên MongoDB.`);
         }
 
+        // Quét email chưa đọc trong 24h qua chứa từ khóa MB hoặc VCB
         const res = await gmail.users.messages.list({
             userId: 'me',
             q: 'is:unread newer_than:1d ("MB eBanking" OR "VCB Digibank")'
@@ -118,6 +120,7 @@ async function checkEmailsViaApi() {
 
 setInterval(checkEmailsViaApi, 30000);
 
+// 5. API chính cho thiết bị lấy thông tin giao dịch
 app.get('/api/check-bank-audio', async (req, res) => {
     try {
         const pendingTx = await Transaction.findOne({ is_read: false }).sort({ created_at: 1 });
@@ -131,6 +134,11 @@ app.get('/api/check-bank-audio', async (req, res) => {
     } catch (err) {
         res.status(500).json({ has_notification: false });
     }
+});
+
+// 6. API dành riêng cho UptimeRobot ghé thăm (Giữ server luôn thức 24/7)
+app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: "OK", message: "Server is alive!" });
 });
 
 const PORT = process.env.PORT || 3000;
