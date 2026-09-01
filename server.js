@@ -87,7 +87,7 @@ function getEmailBody(payload) {
     return body.replace(/<[^>]*>?/gm, '').substring(0, 400);
 }
 
-// 5. Hàm dùng Gemini AI phân tích (Đã cập nhật model gemini-3.6-flash chuẩn)
+// 5. Hàm dùng Gemini AI phân tích
 async function analyzeEmailWithAI(subject, snippet, body) {
     try {
         const prompt = `
@@ -104,7 +104,7 @@ Trả về JSON thuần (không dùng markdown code block):
 `;
 
         const aiPromise = ai.models.generateContent({
-            model: 'gemini-3.6-flash', // Cập nhật đúng tên model yêu cầu từ hệ thống Google
+            model: 'gemini-3.6-flash',
             contents: [prompt],
         });
 
@@ -162,7 +162,7 @@ async function checkEmailsViaApi() {
             return;
         }
 
-        console.log(`📬 Tìm thấy ${messages.length} email chưa đọc. Đang xử lý nhanh...`);
+        console.log(`📬 Tìm thấy ${messages.length} email chưa đọc. Đang xử lý...`);
 
         for (const msg of messages) {
             const msgId = msg.id;
@@ -224,6 +224,19 @@ async function checkEmailsViaApi() {
 // Quét định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
+// API endpoint kích hoạt quét email thủ công từ ESP32
+app.get('/api/trigger-check-email', async (req, res) => {
+    const mac = req.query.mac;
+    console.log(`📩 Nhận yêu cầu kiểm tra email thủ công từ thiết bị MAC: ${mac}`);
+    try {
+        await checkEmailsViaApi();
+        res.status(200).json({ success: true, message: "Đã quét email thành công." });
+    } catch (err) {
+        console.error("❌ Lỗi quét email thủ công:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 app.get('/api/check-bank-audio', async (req, res) => {
     try {
         const pendingTx = await Transaction.findOne({ is_read: false }).sort({ created_at: 1 });
@@ -237,6 +250,31 @@ app.get('/api/check-bank-audio', async (req, res) => {
     } catch (err) {
         res.status(500).json({ has_notification: false });
     }
+});
+
+app.get('/api/bank-history', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 3;
+        const txs = await Transaction.find().sort({ created_at: -1 }).limit(limit);
+        res.json({ transactions: txs });
+    } catch (err) {
+        res.status(500).json({ transactions: [] });
+    }
+});
+
+app.get('/api/bank-stats', async (req, res) => {
+    try {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const txs = await Transaction.find({ created_at: { $gte: startOfDay } });
+        res.json({ total_transactions: txs.length, total_amount: 0 });
+    } catch (err) {
+        res.status(500).json({ total_transactions: 0, total_amount: 0 });
+    }
+});
+
+app.get('/api/check-license', (req, res) => {
+    res.json({ status: "active", expiration: "2030-01-01" });
 });
 
 app.get('/api/health', (req, res) => {
