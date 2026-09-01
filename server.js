@@ -87,7 +87,7 @@ function getEmailBody(payload) {
     return body;
 }
 
-// 5. Hàm dùng Gemini AI phân tích
+// 5. Hàm dùng Gemini AI phân tích (Đã sửa lại cú pháp model chuẩn cho SDK mới)
 async function analyzeEmailWithAI(subject, snippet, body) {
     try {
         const prompt = `
@@ -104,13 +104,23 @@ Yêu cầu: Trả về kết quả bắt buộc phải ở dạng JSON thuần t
 }
 `;
 
+        // Sử dụng tên model chuẩn theo cú pháp mới của @google/genai
         const response = await ai.models.generateContent({
             model: 'gemini-1.5-flash',
-            contents: prompt,
+            contents: [prompt],
         });
 
-        let textResponse = response.text.trim();
-        textResponse = textResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+        // SDK mới trả về kết quả qua response.text hoặc response.candidates
+        let textResponse = '';
+        if (typeof response.text === 'function') {
+            textResponse = response.text();
+        } else if (response.text) {
+            textResponse = response.text;
+        } else if (response.candidates?.[0]?.content?.parts?.[0]?.text) {
+            textResponse = response.candidates[0].content.parts[0].text;
+        }
+
+        textResponse = textResponse.trim().replace(/```json/g, '').replace(/```/g, '').trim();
 
         const jsonStart = textResponse.indexOf('{');
         const jsonEnd = textResponse.lastIndexOf('}');
@@ -126,7 +136,7 @@ Yêu cầu: Trả về kết quả bắt buộc phải ở dạng JSON thuần t
     }
 }
 
-// 6. Hàm quét email tự động (Đã bọc try-catch tổng để chắc chắn in log)
+// 6. Hàm quét email tự động
 async function checkEmailsViaApi() {
     console.log("🔄 Đang chạy tiến trình quét email...");
 
