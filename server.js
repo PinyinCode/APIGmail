@@ -68,7 +68,7 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm trích xuất nội dung body thô của email
+// 4. Hàm trích xuất nội dung body thô và làm sạch HTML cơ bản
 function getEmailBody(payload) {
     let body = '';
     if (payload.body && payload.body.data) {
@@ -84,33 +84,38 @@ function getEmailBody(payload) {
             }
         }
     }
-    return body;
+    // Xóa bớt thẻ HTML rườm rà nếu có để giảm dung lượng
+    return body.replace(/<[^>]*>?/gm, '').substring(0, 400);
 }
 
-// 5. Hàm dùng Gemini AI phân tích (Đã sửa lại cú pháp model chuẩn cho SDK mới)
+// 5. Hàm dùng Gemini AI phân tích (Có cơ chế chống treo timeout 10 giây)
 async function analyzeEmailWithAI(subject, snippet, body) {
     try {
         const prompt = `
-Bạn là một trợ lý tài chính thông minh. Hãy phân tích email dưới đây xem đây có phải là email thông báo biến động số dư (tiền đến, tiền đi, thanh toán, chuyển khoản, số dư tài khoản, nạp tiền) từ một ngân hàng hoặc ví điện tử (như MB, VCB, Techcombank, Momo, ZaloPay, Agribank, BIDV, v.v.) hay không.
+Phân tích email xem có phải biến động số dư ngân hàng/ví điện tử không.
+Tiêu đề: "${subject}"
+Nội dung: "${snippet} ${body}"
 
-Tiêu đề email: "${subject}"
-Nội dung email: "${snippet} \n ${body.substring(0, 600)}"
-
-Yêu cầu: Trả về kết quả bắt buộc phải ở dạng JSON thuần túy (không dùng markdown code block), với cấu trúc chính xác sau:
+Trả về JSON thuần (không markdown):
 {
   "isBankTransaction": true hoặc false,
-  "bankName": "Tên ngân hàng hoặc ví điện tử",
-  "summary": "Tóm tắt ngắn gọn biến động số dư (VD: +500,000 VND từ Nguyễn Văn A)"
+  "bankName": "Tên ngân hàng",
+  "summary": "Tóm tắt ngắn giao dịch"
 }
 `;
 
-        // Sử dụng tên model chuẩn theo cú pháp mới của @google/genai
-        const response = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
+        // Tạo Promise gọi AI kèm Timeout 10 giây để không bao giờ bị treo
+        const aiPromise = ai.models.generateContent({
+            model: 'gemini-2.5-flash',
             contents: [prompt],
         });
 
-        // SDK mới trả về kết quả qua response.text hoặc response.candidates
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('AI Timeout')), 10000)
+        );
+
+        const response = await Promise.race([aiPromise, timeoutPromise]);
+
         let textResponse = '';
         if (typeof response.text === 'function') {
             textResponse = response.text();
@@ -125,20 +130,19 @@ Yêu cầu: Trả về kết quả bắt buộc phải ở dạng JSON thuần t
         const jsonStart = textResponse.indexOf('{');
         const jsonEnd = textResponse.lastIndexOf('}');
         if (jsonStart !== -1 && jsonEnd !== -1) {
-            const jsonString = textResponse.substring(jsonStart, jsonEnd + 1);
-            return JSON.parse(jsonString);
+            return JSON.parse(textResponse.substring(jsonStart, jsonEnd + 1));
         }
 
         return { isBankTransaction: false };
     } catch (err) {
-        console.error("⚠️ Lỗi phân tích Gemini AI:", err);
+        console.error("⚠️ Lỗi hoặc quá thời gian phân tích AI:", err.message);
         return { isBankTransaction: false };
     }
 }
 
 // 6. Hàm quét email tự động
 async function checkEmailsViaApi() {
-    console.log("🔄 Đang chạy tiến trình quét email...");
+    console.log("🔄 Đang quét email...");
 
     if (mongoose.connection.readyState !== 1) {
         console.log("⏳ Đang chờ kết nối MongoDB...");
@@ -156,17 +160,24 @@ async function checkEmailsViaApi() {
 
         const messages = res.data.messages;
         if (!messages || messages.length === 0) {
-            console.log("📭 Không tìm thấy email chưa đọc nào trong 24h qua.");
+            console.log("📭 Không có email chưa đọc.");
             return;
         }
 
-        console.log(`📬 Tìm thấy ${messages.length} email chưa đọc. Đang xử lý...`);
+        console.log(`📬 Tìm thấy ${messages.length} email chưa đọc. Đang xử lý nhanh...`);
 
         for (const msg of messages) {
             const msgId = msg.id;
 
             const existing = await Transaction.findOne({ msgId: msgId });
-            if (existing) continue;
+            if (existing) {
+                // Nếu đã tồn tại trong DB mà chưa đánh dấu đọc trên Gmail thì xử lý luôn
+                await gmail.users.messages.batchModify({
+                    userId: 'me',
+                    requestBody: { ids: [msgId], removeLabelIds: ['UNREAD'] }
+                });
+                continue;
+            }
 
             const detail = await gmail.users.messages.get({
                 userId: 'me',
@@ -182,7 +193,7 @@ async function checkEmailsViaApi() {
 
             const aiAnalysis = await analyzeEmailWithAI(subject, snippet, body);
 
-            console.log(`🤖 [AI Check] Tiêu đề: "${subject}" -> Kết quả:`, JSON.stringify(aiAnalysis));
+            console.log(`🤖 [AI Result] Tiêu đề: "${subject}" -> Giao dịch:`, aiAnalysis.isBankTransaction);
 
             if (aiAnalysis && aiAnalysis.isBankTransaction) {
                 const bankName = aiAnalysis.bankName || "Ngân hàng";
@@ -194,12 +205,12 @@ async function checkEmailsViaApi() {
                     is_read: false
                 });
                 await newTx.save();
-                console.log("💾 Đã lưu giao dịch vào MongoDB:", formattedMessage);
+                console.log("💾 Đã lưu giao dịch:", formattedMessage);
 
                 await sendTelegramNotification(formattedMessage);
             }
 
-            // Đánh dấu đã đọc
+            // Luôn đánh dấu đã đọc để dứt điểm email này, không bị lặp lại
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
@@ -207,10 +218,10 @@ async function checkEmailsViaApi() {
                     removeLabelIds: ['UNREAD']
                 }
             });
-            console.log(`👁️ Đã đánh dấu đọc cho email ID: ${msgId}`);
+            console.log(`👁️ Đã đánh dấu đọc xong email ID: ${msgId}`);
         }
     } catch (err) {
-        console.error("❌ Lỗi nghiêm trọng trong hàm checkEmailsViaApi:", err);
+        console.error("❌ Lỗi vòng lặp quét email:", err);
     }
 }
 
