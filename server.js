@@ -1,9 +1,13 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
+const { GoogleGenAI } = require('@google/genai'); // Thêm thư viện Google Gen AI
 
 const app = express();
 app.use(express.json());
+
+// Khởi tạo Gemini AI (yêu cầu biến môi trường GEMINI_API_KEY)
+const ai = new GoogleGenAI();
 
 // 1. Kết nối MongoDB
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -19,7 +23,7 @@ const transactionSchema = new mongoose.Schema({
 });
 const Transaction = mongoose.model('Transaction', transactionSchema);
 
-// 2. Cấu hình Google OAuth2 Client
+// 2. Cấu hình Google OAuth2 Client (Gmail)
 const oAuth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
@@ -55,7 +59,59 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email tự động và nhận diện ngân hàng
+// 4. Hàm trích xuất nội dung email (Hỗ trợ lấy body thô của email)
+function getEmailBody(payload) {
+    let body = '';
+    if (payload.body && payload.body.data) {
+        body = Buffer.from(payload.body.data, 'base64').toString('utf-8');
+    } else if (payload.parts) {
+        for (const part of payload.parts) {
+            if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+                body = Buffer.from(part.body.data, 'base64').toString('utf-8');
+                break;
+            } else if (part.parts) {
+                body = getEmailBody(part);
+                if (body) break;
+            }
+        }
+    }
+    return body;
+}
+
+// 5. Hàm dùng Gemini AI để phân tích email thay vì dùng từ khóa cứng
+async function analyzeEmailWithAI(subject, snippet, body) {
+    try {
+        const prompt = `
+Bạn là một trợ lý tài chính thông minh. Hãy phân tích email dưới đây xem đây có phải là email thông báo biến động số dư (tiền đến, tiền đi, thanh toán, chuyển khoản) từ một ngân hàng hoặc ví điện tử hay không.
+
+Tiêu đề email: "${subject}"
+Đoạn trích/Nội dung email: "${snippet} \n ${body.substring(0, 500)}"
+
+Yêu cầu trả về dạng JSON thuần túy (không chứa Markdown như \`\`\`json):
+{
+  "isBankTransaction": true hoặc false,
+  "bankName": "Tên ngân hàng hoặc ví điện tử (VD: MBBank, VCB, Techcombank, Momo...)",
+  "summary": "Tóm tắt ngắn gọn biến động (VD: Biến động số dư: +500,000 VND từ Nguyễn Văn A)"
+}
+`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+        });
+
+        let textResponse = response.text.trim();
+        // Làm sạch nếu model lỡ trả về định dạng markdown block
+        textResponse = textResponse.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+
+        return JSON.parse(textResponse);
+    } catch (err) {
+        console.error("Lỗi phân tích Gemini AI:", err);
+        return { isBankTransaction: false };
+    }
+}
+
+// 6. Hàm quét email tự động sử dụng AI
 async function checkEmailsViaApi() {
     if (mongoose.connection.readyState !== 1) {
         console.log("Đang chờ kết nối MongoDB...");
@@ -70,10 +126,10 @@ async function checkEmailsViaApi() {
             console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ trên MongoDB.`);
         }
 
-        // Quét email chưa đọc trong 24h qua chứa từ khóa MB hoặc VCB
+        // Quét các email chưa đọc trong 24h qua có chứa các từ khóa chung chung về tài chính
         const res = await gmail.users.messages.list({
             userId: 'me',
-            q: 'is:unread newer_than:1d ("MB eBanking" OR "VCB Digibank")'
+            q: 'is:unread newer_than:1d ("giao dịch" OR "số dư" OR "tài khoản" OR "biến động" OR "thanh toán" OR "VND" OR "VND+")'
         });
 
         const messages = res.data.messages;
@@ -93,33 +149,31 @@ async function checkEmailsViaApi() {
 
             const headers = detail.data.payload.headers;
             const subjectHeader = headers.find(h => h.name.toLowerCase() === 'subject');
-            const subject = subjectHeader ? subjectHeader.value : 'Biến động số dư ngân hàng';
+            const subject = subjectHeader ? subjectHeader.value : '';
+            const snippet = detail.data.snippet || '';
+            const body = getEmailBody(detail.data.payload);
 
-            // Nhận diện ngân hàng để làm rõ nội dung
-            let bankName = "Ngân hàng";
-            const lowerSubject = subject.toLowerCase();
-            if (lowerSubject.includes('mb ebanking') || lowerSubject.includes('mb')) {
-                bankName = "MBBank";
-            } else if (lowerSubject.includes('vcb digibank') || lowerSubject.includes('vcb')) {
-                bankName = "VCB";
+            // Gọi Gemini AI để phân tích nội dung email
+            const aiAnalysis = await analyzeEmailWithAI(subject, snippet, body);
+
+            if (aiAnalysis && aiAnalysis.isBankTransaction) {
+                const bankName = aiAnalysis.bankName || "Ngân hàng";
+                const formattedMessage = `[${bankName}] ${aiAnalysis.summary || subject}`;
+
+                // Lưu vào MongoDB
+                const newTx = new Transaction({
+                    msgId: msgId,
+                    message: formattedMessage,
+                    is_read: false
+                });
+                await newTx.save();
+                console.log("Đã lưu giao dịch ngân hàng mới bằng AI:", formattedMessage);
+
+                // Bắn tin nhắn về Telegram
+                await sendTelegramNotification(formattedMessage);
             }
 
-            // Gộp tên ngân hàng và tiêu đề lại cho rõ ràng
-            const formattedMessage = `[${bankName}] ${subject}`;
-
-            // Lưu vào MongoDB
-            const newTx = new Transaction({
-                msgId: msgId,
-                message: formattedMessage,
-                is_read: false
-            });
-            await newTx.save();
-            console.log("Đã lưu email ngân hàng mới:", formattedMessage);
-
-            // Bắn tin nhắn về Telegram
-            await sendTelegramNotification(formattedMessage);
-
-            // Đánh dấu email là Đã đọc trên Gmail
+            // Đánh dấu email là Đã đọc trên Gmail (dù có phải ngân hàng hay không để tránh quét lại nhiều lần)
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
@@ -136,7 +190,7 @@ async function checkEmailsViaApi() {
 // Quét định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
-// 5. API chính cho thiết bị lấy thông tin giao dịch
+// 7. API chính cho thiết bị lấy thông tin giao dịch
 app.get('/api/check-bank-audio', async (req, res) => {
     try {
         const pendingTx = await Transaction.findOne({ is_read: false }).sort({ created_at: 1 });
@@ -152,7 +206,7 @@ app.get('/api/check-bank-audio', async (req, res) => {
     }
 });
 
-// 6. API dành riêng cho UptimeRobot ghé thăm (Giữ server luôn thức 24/7)
+// 8. API dành riêng cho UptimeRobot ghé thăm (Giữ server luôn thức 24/7)
 app.get('/api/health', (req, res) => {
     res.status(200).json({ status: "OK", message: "Server is alive!" });
 });
