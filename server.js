@@ -84,11 +84,10 @@ function getEmailBody(payload) {
             }
         }
     }
-    // Xóa bớt thẻ HTML rườm rà nếu có để giảm dung lượng
     return body.replace(/<[^>]*>?/gm, '').substring(0, 400);
 }
 
-// 5. Hàm dùng Gemini AI phân tích (Có cơ chế chống treo timeout 10 giây)
+// 5. Hàm dùng Gemini AI phân tích (Đã cập nhật model gemini-3.6-flash chuẩn)
 async function analyzeEmailWithAI(subject, snippet, body) {
     try {
         const prompt = `
@@ -96,7 +95,7 @@ Phân tích email xem có phải biến động số dư ngân hàng/ví điện
 Tiêu đề: "${subject}"
 Nội dung: "${snippet} ${body}"
 
-Trả về JSON thuần (không markdown):
+Trả về JSON thuần (không dùng markdown code block):
 {
   "isBankTransaction": true hoặc false,
   "bankName": "Tên ngân hàng",
@@ -104,9 +103,8 @@ Trả về JSON thuần (không markdown):
 }
 `;
 
-        // Tạo Promise gọi AI kèm Timeout 10 giây để không bao giờ bị treo
         const aiPromise = ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.6-flash', // Cập nhật đúng tên model yêu cầu từ hệ thống Google
             contents: [prompt],
         });
 
@@ -171,7 +169,6 @@ async function checkEmailsViaApi() {
 
             const existing = await Transaction.findOne({ msgId: msgId });
             if (existing) {
-                // Nếu đã tồn tại trong DB mà chưa đánh dấu đọc trên Gmail thì xử lý luôn
                 await gmail.users.messages.batchModify({
                     userId: 'me',
                     requestBody: { ids: [msgId], removeLabelIds: ['UNREAD'] }
@@ -210,7 +207,6 @@ async function checkEmailsViaApi() {
                 await sendTelegramNotification(formattedMessage);
             }
 
-            // Luôn đánh dấu đã đọc để dứt điểm email này, không bị lặp lại
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
