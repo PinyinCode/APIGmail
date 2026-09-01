@@ -55,7 +55,7 @@ async function sendTelegramNotification(text) {
     }
 }
 
-// 4. Hàm quét email tự động
+// 4. Hàm quét email tự động và nhận diện ngân hàng
 async function checkEmailsViaApi() {
     if (mongoose.connection.readyState !== 1) {
         console.log("Đang chờ kết nối MongoDB...");
@@ -95,16 +95,31 @@ async function checkEmailsViaApi() {
             const subjectHeader = headers.find(h => h.name.toLowerCase() === 'subject');
             const subject = subjectHeader ? subjectHeader.value : 'Biến động số dư ngân hàng';
 
+            // Nhận diện ngân hàng để làm rõ nội dung
+            let bankName = "Ngân hàng";
+            const lowerSubject = subject.toLowerCase();
+            if (lowerSubject.includes('mb ebanking') || lowerSubject.includes('mb')) {
+                bankName = "MBBank";
+            } else if (lowerSubject.includes('vcb digibank') || lowerSubject.includes('vcb')) {
+                bankName = "VCB";
+            }
+
+            // Gộp tên ngân hàng và tiêu đề lại cho rõ ràng
+            const formattedMessage = `[${bankName}] ${subject}`;
+
+            // Lưu vào MongoDB
             const newTx = new Transaction({
                 msgId: msgId,
-                message: subject,
+                message: formattedMessage,
                 is_read: false
             });
             await newTx.save();
-            console.log("Đã lưu email ngân hàng mới:", subject);
+            console.log("Đã lưu email ngân hàng mới:", formattedMessage);
 
-            await sendTelegramNotification(subject);
+            // Bắn tin nhắn về Telegram
+            await sendTelegramNotification(formattedMessage);
 
+            // Đánh dấu email là Đã đọc trên Gmail
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
@@ -118,6 +133,7 @@ async function checkEmailsViaApi() {
     }
 }
 
+// Quét định kỳ mỗi 30 giây
 setInterval(checkEmailsViaApi, 30000);
 
 // 5. API chính cho thiết bị lấy thông tin giao dịch
