@@ -105,12 +105,11 @@ Yêu cầu trả về đúng định dạng JSON thuần túy (tuyệt đối kh
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-1.5-flash', // Sử dụng model chuẩn để tránh lỗi 404
             contents: prompt,
         });
 
         let textResponse = response.text.trim();
-        // Xử lý làm sạch chuỗi nếu model lỡ trả về định dạng markdown block
         textResponse = textResponse.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
 
         return JSON.parse(textResponse);
@@ -162,7 +161,7 @@ async function checkEmailsViaApi() {
             // Gọi Gemini AI để phân tích nội dung email
             const aiAnalysis = await analyzeEmailWithAI(subject, snippet, body);
 
-            // --- IN LOG ĐỂ KIỂM TRA TRÊN RENDER ---
+            // In log kết quả phân tích ra màn hình Logs của Render
             console.log(`[AI Check] Tiêu đề: "${subject}" -> Kết quả:`, JSON.stringify(aiAnalysis));
 
             if (aiAnalysis && aiAnalysis.isBankTransaction) {
