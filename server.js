@@ -1,13 +1,13 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai'); // Thêm thư viện Google Gen AI
+const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 app.use(express.json());
 
-// Khởi tạo Gemini AI (yêu cầu biến môi trường GEMINI_API_KEY)
-const ai = new GoogleGenAI();
+// Khởi tạo Gemini AI (trỏ trực tiếp vào biến môi trường GEMINI_API_KEY)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // 1. Kết nối MongoDB
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -41,11 +41,14 @@ async function sendTelegramNotification(text) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
     
-    if (!token || !chatId) return;
+    if (!token || !chatId) {
+        console.log("Thiếu Telegram Token hoặc Chat ID!");
+        return;
+    }
 
     try {
         const url = `https://api.telegram.org/bot${token}/sendMessage`;
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -54,12 +57,18 @@ async function sendTelegramNotification(text) {
                 parse_mode: 'Markdown'
             })
         });
+        const result = await response.json();
+        if (!result.ok) {
+            console.error("Telegram API trả về lỗi:", result);
+        } else {
+            console.log("Đã gửi tin nhắn thành công về Telegram!");
+        }
     } catch (err) {
-        console.error("Lỗi gửi Telegram:", err);
+        console.error("Lỗi kết nối Telegram:", err);
     }
 }
 
-// 4. Hàm trích xuất nội dung email (Hỗ trợ lấy body thô của email)
+// 4. Hàm trích xuất nội dung body thô của email
 function getEmailBody(payload) {
     let body = '';
     if (payload.body && payload.body.data) {
@@ -78,20 +87,20 @@ function getEmailBody(payload) {
     return body;
 }
 
-// 5. Hàm dùng Gemini AI để phân tích email thay vì dùng từ khóa cứng
+// 5. Hàm dùng Gemini AI để phân tích email
 async function analyzeEmailWithAI(subject, snippet, body) {
     try {
         const prompt = `
-Bạn là một trợ lý tài chính thông minh. Hãy phân tích email dưới đây xem đây có phải là email thông báo biến động số dư (tiền đến, tiền đi, thanh toán, chuyển khoản) từ một ngân hàng hoặc ví điện tử hay không.
+Bạn là một trợ lý tài chính thông minh. Hãy phân tích email dưới đây xem đây có phải là email thông báo biến động số dư (tiền đến, tiền đi, thanh toán, chuyển khoản, số dư tài khoản) từ một ngân hàng hoặc ví điện tử hay không.
 
 Tiêu đề email: "${subject}"
-Đoạn trích/Nội dung email: "${snippet} \n ${body.substring(0, 500)}"
+Đoạn trích/Nội dung email: "${snippet} \n${body.substring(0, 500)}"
 
-Yêu cầu trả về dạng JSON thuần túy (không chứa Markdown như \`\`\`json):
+Yêu cầu trả về đúng định dạng JSON thuần túy (tuyệt đối không bọc trong các thẻ markdown như \`\`\`json):
 {
   "isBankTransaction": true hoặc false,
-  "bankName": "Tên ngân hàng hoặc ví điện tử (VD: MBBank, VCB, Techcombank, Momo...)",
-  "summary": "Tóm tắt ngắn gọn biến động (VD: Biến động số dư: +500,000 VND từ Nguyễn Văn A)"
+  "bankName": "Tên ngân hàng hoặc ví điện tử (VD: MBBank, VCB, Techcombank, Momo, Agribank...)",
+  "summary": "Tóm tắt ngắn gọn biến động số dư (VD: Biến động số dư: +500,000 VND từ Nguyễn Văn A)"
 }
 `;
 
@@ -101,8 +110,8 @@ Yêu cầu trả về dạng JSON thuần túy (không chứa Markdown như \`\`
         });
 
         let textResponse = response.text.trim();
-        // Làm sạch nếu model lỡ trả về định dạng markdown block
-        textResponse = textResponse.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        // Xử lý làm sạch chuỗi nếu model lỡ trả về định dạng markdown block
+        textResponse = textResponse.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
 
         return JSON.parse(textResponse);
     } catch (err) {
@@ -119,17 +128,14 @@ async function checkEmailsViaApi() {
     }
 
     try {
-        // Tự động xóa dữ liệu cũ hơn 24 giờ
+        // Tự động xóa dữ liệu cũ hơn 24 giờ trên DB
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const deleteResult = await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
-        if (deleteResult.deletedCount > 0) {
-            console.log(`Đã dọn dẹp ${deleteResult.deletedCount} giao dịch cũ trên MongoDB.`);
-        }
+        await Transaction.deleteMany({ created_at: { $lt: twentyFourHoursAgo } });
 
         // Quét các email chưa đọc trong 24h qua có chứa các từ khóa chung chung về tài chính
         const res = await gmail.users.messages.list({
             userId: 'me',
-            q: 'is:unread newer_than:1d ("giao dịch" OR "số dư" OR "tài khoản" OR "biến động" OR "thanh toán" OR "VND" OR "VND+")'
+            q: 'is:unread newer_than:1d ("giao dịch" OR "số dư" OR "tài khoản" OR "biến động" OR "thanh toán" OR "VND" OR "VND+" OR "chuyển khoản")'
         });
 
         const messages = res.data.messages;
@@ -156,6 +162,9 @@ async function checkEmailsViaApi() {
             // Gọi Gemini AI để phân tích nội dung email
             const aiAnalysis = await analyzeEmailWithAI(subject, snippet, body);
 
+            // --- IN LOG ĐỂ KIỂM TRA TRÊN RENDER ---
+            console.log(`[AI Check] Tiêu đề: "${subject}" -> Kết quả:`, JSON.stringify(aiAnalysis));
+
             if (aiAnalysis && aiAnalysis.isBankTransaction) {
                 const bankName = aiAnalysis.bankName || "Ngân hàng";
                 const formattedMessage = `[${bankName}] ${aiAnalysis.summary || subject}`;
@@ -167,13 +176,13 @@ async function checkEmailsViaApi() {
                     is_read: false
                 });
                 await newTx.save();
-                console.log("Đã lưu giao dịch ngân hàng mới bằng AI:", formattedMessage);
+                console.log("Đã lưu giao dịch ngân hàng mới:", formattedMessage);
 
                 // Bắn tin nhắn về Telegram
                 await sendTelegramNotification(formattedMessage);
             }
 
-            // Đánh dấu email là Đã đọc trên Gmail (dù có phải ngân hàng hay không để tránh quét lại nhiều lần)
+            // Đánh dấu email là Đã đọc trên Gmail để không quét lại lần sau
             await gmail.users.messages.batchModify({
                 userId: 'me',
                 requestBody: {
