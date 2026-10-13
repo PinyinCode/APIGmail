@@ -93,7 +93,7 @@ function buildOtpEmailHtml(otp, deviceName, email) {
 async function sendGmailHtml(to, subject, htmlContent) {
     const fromEmail = process.env.GOOGLE_SENDER_EMAIL;
     const messageParts = [
-        `From: "Xác thực tài khoản" <${fromEmail}>`,
+        `From: "Account Verification" <${fromEmail}>`,
         `To: ${to}`,
         `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
         'MIME-Version: 1.0',
