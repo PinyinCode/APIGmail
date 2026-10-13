@@ -151,7 +151,7 @@ app.post('/api/device/send-otp', async (req, res) => {
         });
 
         const html = buildOtpEmailHtml(otp, deviceName, emailLower);
-        await sendGmailHtml(emailLower, '🔐 Mã OTP xác thực đăng nhập', html);
+        await sendGmailHtml(emailLower, 'Your OTP Verification Code', html);
 
         lastSentMap.set(emailLower, Date.now());
         console.log(`📧 Gửi OTP ${otp} đến ${emailLower}`);
