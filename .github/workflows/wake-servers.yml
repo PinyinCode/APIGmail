@@ -1,0 +1,51 @@
+name: Wake Render Servers
+
+on:
+  schedule:
+    # Chạy mỗi 10 phút (GitHub cron dùng UTC)
+    # Render free ngủ sau 15 phút → 10 phút an toàn
+    - cron: '*/10 * * * *'
+  
+  # Cho phép bấm chạy thủ công
+  workflow_dispatch:
+
+jobs:
+  wake-servers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    strategy:
+      fail-fast: false      # 1 server fail không ảnh hưởng server khác
+      matrix:
+        server:
+          - name: 'OTP Server'
+            url: 'https://apigmail-n8bp.onrender.com/'
+          - name: 'Grading Server'
+            url: 'https://chinese-grading.onrender.com/'
+          - name: 'Vocab API'
+            url: 'https://chinese-vocab-api.onrender.com/'
+    
+    steps:
+      - name: Ping ${{ matrix.server.name }}
+        run: |
+          echo "🕐 Pinging: ${{ matrix.server.name }}"
+          echo "URL: ${{ matrix.server.url }}"
+          
+          # Gửi request với timeout 90s (đủ wake Render nếu ngủ)
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 90 \
+            --retry 2 \
+            --retry-delay 10 \
+            "${{ matrix.server.url }}")
+          
+          echo "📡 HTTP Status: $response"
+          
+          if [ "$response" = "200" ]; then
+            echo "✅ ${{ matrix.server.name }} — OK"
+          elif [ "$response" = "000" ]; then
+            echo "⚠️ ${{ matrix.server.name }} — Timeout (có thể đang wake)"
+            exit 1
+          else
+            echo "❌ ${{ matrix.server.name }} — Status: $response"
+            exit 1
+          fi
